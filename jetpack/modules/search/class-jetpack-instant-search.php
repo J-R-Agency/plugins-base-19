@@ -6,9 +6,6 @@
  * @package jetpack
  */
 
-use Automattic\Jetpack\Connection\Client;
-use Automattic\Jetpack\Constants;
-
 /**
  * Class to load Instant Search experience on the site.
  *
@@ -25,7 +22,7 @@ class Jetpack_Instant_Search extends Jetpack_Search {
 		$this->base_load_php();
 
 		if ( class_exists( 'WP_Customize_Manager' ) ) {
-			require_once dirname( __FILE__ ) . '/class-jetpack-search-customize.php';
+			require_once __DIR__ . '/class-jetpack-search-customize.php';
 			new Jetpack_Search_Customize();
 		}
 	}
@@ -56,21 +53,46 @@ class Jetpack_Instant_Search extends Jetpack_Search {
 	 * Loads assets for Jetpack Instant Search Prototype featuring Search As You Type experience.
 	 */
 	public function load_assets() {
-		$script_relative_path = '_inc/build/instant-search/jp-search.bundle.js';
-		$style_relative_path  = '_inc/build/instant-search/instant-search.min.css';
-		if ( ! file_exists( JETPACK__PLUGIN_DIR . $script_relative_path ) || ! file_exists( JETPACK__PLUGIN_DIR . $style_relative_path ) ) {
+		$this->load_assets_with_parameters( '', JETPACK__PLUGIN_FILE );
+	}
+
+	/**
+	 * Loads assets according to parameters provided.
+	 *
+	 * @param string $path_prefix - Prefix for assets' relative paths.
+	 * @param string $plugin_base_path - Base path for use in plugins_url.
+	 */
+	public function load_assets_with_parameters( $path_prefix, $plugin_base_path ) {
+		$polyfill_relative_path = $path_prefix . '_inc/build/instant-search/jp-search-ie11-polyfill-loader.bundle.js';
+		$script_relative_path   = $path_prefix . '_inc/build/instant-search/jp-search-main.bundle.js';
+		$style_relative_path    = $path_prefix . '_inc/build/instant-search/jp-search-main.bundle.css';
+
+		if (
+			! file_exists( JETPACK__PLUGIN_DIR . $polyfill_relative_path ) ||
+			! file_exists( JETPACK__PLUGIN_DIR . $script_relative_path ) ||
+			! file_exists( JETPACK__PLUGIN_DIR . $style_relative_path )
+		) {
 			return;
 		}
 
+		$polyfill_version = Jetpack_Search_Helpers::get_asset_version( $polyfill_relative_path );
+		$polyfill_path    = plugins_url( $polyfill_relative_path, $plugin_base_path );
+		wp_enqueue_script( 'jetpack-instant-search-ie11', $polyfill_path, array(), $polyfill_version, true );
+		$polyfill_payload_path = plugins_url(
+			$path_prefix . '_inc/build/instant-search/jp-search-ie11-polyfill-payload.bundle.js',
+			$plugin_base_path
+		);
+		$this->inject_polyfill_js_options( $polyfill_payload_path );
+
 		$script_version = Jetpack_Search_Helpers::get_asset_version( $script_relative_path );
-		$script_path    = plugins_url( $script_relative_path, JETPACK__PLUGIN_FILE );
+		$script_path    = plugins_url( $script_relative_path, $plugin_base_path );
 		wp_enqueue_script( 'jetpack-instant-search', $script_path, array(), $script_version, true );
 		wp_set_script_translations( 'jetpack-instant-search', 'jetpack' );
 		$this->load_and_initialize_tracks();
 		$this->inject_javascript_options();
 
 		$style_version = Jetpack_Search_Helpers::get_asset_version( $style_relative_path );
-		$style_path    = plugins_url( $style_relative_path, JETPACK__PLUGIN_FILE );
+		$style_path    = plugins_url( $style_relative_path, $plugin_base_path );
 		wp_enqueue_style( 'jetpack-instant-search', $style_path, array(), $style_version );
 	}
 
@@ -155,6 +177,13 @@ class Jetpack_Instant_Search extends Jetpack_Search {
 			'postsPerPage'          => $posts_per_page,
 			'siteId'                => $this->jetpack_blog_id,
 			'postTypes'             => $post_type_labels,
+			'webpackPublicPath'     => plugins_url( '_inc/build/instant-search/', JETPACK__PLUGIN_FILE ),
+
+			// config values related to private site support.
+			'apiRoot'               => esc_url_raw( rest_url() ),
+			'apiNonce'              => wp_create_nonce( 'wp_rest' ),
+			'isPrivateSite'         => '-1' === get_option( 'blog_public' ),
+			'isWpcom'               => defined( 'IS_WPCOM' ) && IS_WPCOM,
 
 			// search options.
 			'defaultSort'           => get_option( $prefix . 'default_sort', 'relevance' ),
@@ -178,7 +207,16 @@ class Jetpack_Instant_Search extends Jetpack_Search {
 		$options = apply_filters( 'jetpack_instant_search_options', $options );
 
 		// Use wp_add_inline_script instead of wp_localize_script, see https://core.trac.wordpress.org/ticket/25280.
-		wp_add_inline_script( 'jetpack-instant-search', 'var JetpackInstantSearchOptions=JSON.parse(decodeURIComponent("' . rawurlencode( wp_json_encode( $options ) ) . '"));' );
+		wp_add_inline_script( 'jetpack-instant-search', 'var JetpackInstantSearchOptions=JSON.parse(decodeURIComponent("' . rawurlencode( wp_json_encode( $options ) ) . '"));', 'before' );
+	}
+
+	/**
+	 * Passes options to the polyfill loader script.
+	 *
+	 * @param string $polyfill_payload_path - Absolute path to the IE11 polyfill payload.
+	 */
+	protected function inject_polyfill_js_options( $polyfill_payload_path ) {
+		wp_add_inline_script( 'jetpack-instant-search-ie11', 'var JetpackInstantSearchIe11PolyfillPath=decodeURIComponent("' . rawurlencode( $polyfill_payload_path ) . '");', 'before' );
 	}
 
 	/**
@@ -526,11 +564,16 @@ class Jetpack_Instant_Search extends Jetpack_Search {
 			);
 		}
 
-		$taxonomies = get_taxonomies(
-			array(
-				'public'   => true,
-				'_builtin' => false,
-			)
+		// Grab a maximum of 3 taxonomies.
+		$taxonomies = array_slice(
+			get_taxonomies(
+				array(
+					'public'   => true,
+					'_builtin' => false,
+				)
+			),
+			0,
+			3
 		);
 
 		foreach ( $taxonomies as $t ) {
@@ -548,12 +591,14 @@ class Jetpack_Instant_Search extends Jetpack_Search {
 			'taxonomy' => 'category',
 			'count'    => 5,
 		);
+
 		$settings['filters'][] = array(
 			'name'     => '',
 			'type'     => 'taxonomy',
 			'taxonomy' => 'post_tag',
 			'count'    => 5,
 		);
+
 		$settings['filters'][] = array(
 			'name'     => '',
 			'type'     => 'date_histogram',
@@ -561,6 +606,7 @@ class Jetpack_Instant_Search extends Jetpack_Search {
 			'field'    => 'post_date',
 			'interval' => 'year',
 		);
+
 		return $settings;
 	}
 	/**

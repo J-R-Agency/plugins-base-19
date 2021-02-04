@@ -154,4 +154,27 @@
         function is_usd() {
             return ( 'usd' === $this->currency );
         }
+
+        /**
+         * Get currency symbol from currency code.
+         *
+         * @author @invisnet
+         *
+         * @param $currency Currency code.
+         *
+         * @return string|null
+         */
+        static function currency_symbol( $currency ) {
+            switch ( $currency ) {
+                case 'usd':
+                    return '$';
+                case 'gbp':
+                    return '&pound;';
+                case 'eur':
+                    return '&euro;';
+                default:
+                    return null;
+            }
+        }
 	}
+

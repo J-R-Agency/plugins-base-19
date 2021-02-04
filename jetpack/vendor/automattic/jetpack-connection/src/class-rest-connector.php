@@ -99,12 +99,6 @@ class REST_Connector {
 			array(
 				'methods'             => WP_REST_Server::EDITABLE,
 				'callback'            => array( $this, 'connection_reconnect' ),
-				'args'                => array(
-					'action' => array(
-						'type'     => 'string',
-						'required' => true,
-					),
-				),
 				'permission_callback' => __CLASS__ . '::jetpack_reconnect_permission_check',
 			)
 		);
@@ -159,10 +153,11 @@ class REST_Connector {
 		$connection = new Manager();
 
 		$connection_status = array(
-			'isActive'     => $connection->is_active(),
-			'isStaging'    => $status->is_staging_site(),
-			'isRegistered' => $connection->is_registered(),
-			'offlineMode'  => array(
+			'isActive'          => $connection->is_active(),
+			'isStaging'         => $status->is_staging_site(),
+			'isRegistered'      => $connection->is_connected(),
+			'hasConnectedOwner' => $connection->has_connected_owner(),
+			'offlineMode'       => array(
 				'isActive'        => $status->is_offline_mode(),
 				'constant'        => defined( 'JETPACK_DEV_DEBUG' ) && JETPACK_DEV_DEBUG,
 				'url'             => $status->is_local_site(),
@@ -170,7 +165,7 @@ class REST_Connector {
 				'filter'          => ( apply_filters( 'jetpack_development_mode', false ) || apply_filters( 'jetpack_offline_mode', false ) ), // jetpack_development_mode is deprecated.
 				'wpLocalConstant' => defined( 'WP_LOCAL_DEV' ) && WP_LOCAL_DEV,
 			),
-			'isPublic'     => '1' == get_option( 'blog_public' ), // phpcs:ignore WordPress.PHP.StrictComparisons.LooseComparison
+			'isPublic'          => '1' == get_option( 'blog_public' ), // phpcs:ignore WordPress.PHP.StrictComparisons.LooseComparison
 		);
 
 		if ( $rest_response ) {
@@ -181,7 +176,6 @@ class REST_Connector {
 			return $connection_status;
 		}
 	}
-
 
 	/**
 	 * Get plugins connected to the Jetpack.
@@ -199,7 +193,7 @@ class REST_Connector {
 
 		array_walk(
 			$plugins,
-			function( &$data, $slug ) {
+			function ( &$data, $slug ) {
 				$data['slug'] = $slug;
 			}
 		);
@@ -251,42 +245,21 @@ class REST_Connector {
 	 *
 	 * @since 8.8.0
 	 *
-	 * @param WP_REST_Request $request The request sent to the WP REST API.
-	 *
 	 * @return \WP_REST_Response|WP_Error
 	 */
-	public function connection_reconnect( WP_REST_Request $request ) {
-		$params = $request->get_json_params();
-
+	public function connection_reconnect() {
 		$response = array();
 
 		$next = null;
 
-		switch ( $params['action'] ) {
-			case 'reconnect':
-				$result = $this->connection->restore();
+		$result = $this->connection->restore();
 
-				if ( is_wp_error( $result ) ) {
-					$response = $result;
-				} elseif ( is_string( $result ) ) {
-					$next = $result;
-				} else {
-					$next = true === $result ? 'completed' : 'failed';
-				}
-
-				break;
-			case 'reconnect_force':
-				$result = $this->connection->reconnect();
-
-				if ( true === $result ) {
-					$next = 'authorize';
-				} elseif ( is_wp_error( $result ) ) {
-					$response = $result;
-				}
-				break;
-			default:
-				$response = new WP_Error( 'Unknown action' );
-				break;
+		if ( is_wp_error( $result ) ) {
+			$response = $result;
+		} elseif ( is_string( $result ) ) {
+			$next = $result;
+		} else {
+			$next = true === $result ? 'completed' : 'failed';
 		}
 
 		switch ( $next ) {
@@ -296,6 +269,12 @@ class REST_Connector {
 				break;
 			case 'completed':
 				$response['status'] = 'completed';
+				/**
+				 * Action fired when reconnection has completed successfully.
+				 *
+				 * @since 9.0.0
+				 */
+				do_action( 'jetpack_reconnection_completed' );
 				break;
 			case 'failed':
 				$response = new WP_Error( 'Reconnect failed' );
